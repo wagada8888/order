@@ -119,6 +119,10 @@ td.tot{font-weight:700}
 .field{display:flex;flex-direction:column;gap:3px;flex:1;min-width:130px}
 .login{max-width:420px}
 
+body.busy::before{content:"";position:fixed;left:0;right:0;top:0;height:3px;background:var(--blue);z-index:30;transform-origin:left;animation:busybar 1s ease-in-out infinite}
+@keyframes busybar{0%{transform:scaleX(0)}100%{transform:scaleX(1)}}
+body.busy .btn{opacity:.6}
+@media (prefers-reduced-motion: reduce){body.busy::before{animation:none}}
 #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom, 0px));background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:8px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;max-width:90vw;z-index:20}
 #toast.on{opacity:1}
 @media (prefers-reduced-motion: reduce){#toast{transition:none}}
@@ -199,11 +203,23 @@ async function post(action,payload,quiet){
   S.lastErr='';
   return res;
 }
+function canWrite(){if(S.writing){toast('處理中，請稍等一下…');return false;}return true;}
+/* 先在畫面上顯示結果，伺服器確認後再以伺服器的資料為準；失敗時會自動還原 */
+function optimisticOrder(rec){
+  var i=S.all.findIndex(function(o){return o.id===rec.id;});
+  if(i>=0)S.all[i]=rec;else S.all.push(rec);
+  derive();render();
+}
+function optConfirm(ids){
+  var t=new Date().toISOString();
+  S.all.forEach(function(o){if(ids.indexOf(o.id)>=0&&o.status==='submitted'){o.status='confirmed';o.confirmedAt=t;o.notify=true;o.notifyText='';o.notifyAt=t;}});
+  derive();render();
+}
 async function write(action,payload,okMsg){
   if(S.writing){toast('處理中，請稍等一下…');return false;}
-  S.writing=true;
+  S.writing=true;document.body.classList.add('busy');
   var res=await post(action,payload);
-  S.writing=false;
+  S.writing=false;document.body.classList.remove('busy');
   if(res){applyData(res);if(okMsg)toast(okMsg);return true;}
   refresh(true);
   return false;
@@ -577,17 +593,31 @@ async function act(a,ds){
       if(cat.kind==='memo'){
         var dm=draftFor(cat),note=String(dm.__note||'').trim();
         if(!note){toast('請填寫備註');return;}
+        if(!canWrite())return;
+        optimisticOrder({id:oid(S.date,store.id,cat.id),date:S.date,storeId:store.id,catId:cat.id,catName:cat.name,vendor:cat.vendor||'',note:note,
+          lines:[{id:'memo',name:note,unit:cat.unit||'件',qty:dm.memo>0?dm.memo:1}],status:'submitted',submittedAt:new Date().toISOString(),notify:false});
         await write('saveOrder',{order:{date:S.date,storeId:store.id,catId:cat.id,note:note,qty:dm.memo>0?dm.memo:1}},store.name+'「'+cat.name+'」已送出');
         break;
       }
       var lines=visibleItems(cat,store.id).map(function(it){return {id:it.id,name:it.name,unit:it.unit,qty:num(getQty(cat,it))};}).filter(function(l){return l.qty>0;});
       if(!lines.length){toast('請至少填一項數量');return;}
+      if(!canWrite())return;
+      optimisticOrder({id:oid(S.date,store.id,cat.id),date:S.date,storeId:store.id,catId:cat.id,catName:cat.name,vendor:cat.vendor||'',
+        lines:lines,status:'submitted',submittedAt:new Date().toISOString(),notify:false});
       await write('saveOrder',{order:{date:S.date,storeId:store.id,catId:cat.id,lines:lines}},store.name+'「'+cat.name+'」已送出');
       break;}
-    case 'ack':await write('ack',{id:ds.id});break;
-    case 'confirm':await write('confirm',{ids:[ds.id]},'已核實');break;
+    case 'ack':{
+      if(!canWrite())return;
+      var ao=S.all.find(function(x){return x.id===ds.id;});if(ao)ao.notify=false;derive();render();
+      await write('ack',{id:ds.id});break;}
+    case 'confirm':
+      if(!canWrite())return;
+      optConfirm([ds.id]);
+      await write('confirm',{ids:[ds.id]},'已核實');break;
     case 'confirmAll':{
       var ids=S.pending.filter(function(o){return o.date===ds.date&&o.catId===ds.cat;}).map(function(o){return o.id;});
+      if(!canWrite())return;
+      optConfirm(ids);
       await write('confirm',{ids:ids},'已全部核實');break;}
     case 'unconfirm':await write('unconfirm',{id:ds.id});break;
     case 'lineAsk':S.lineAsk={id:ds.id,line:ds.line};render();break;
@@ -603,6 +633,9 @@ async function act(a,ds){
     case 'delCancel':S.delAsk='';refreshFoot(ds.cat);break;
     case 'delDo':{
       var dkey=S.date+'|'+S.storeId+'|'+ds.cat;S.delAsk='';
+      if(!canWrite())return;
+      var delId=oid(S.date,S.storeId,ds.cat);
+      S.all=S.all.filter(function(o){return o.id!==delId;});derive();render();
       if(await write('deleteOrder',{id:oid(S.date,S.storeId,ds.cat)},'已刪除訂單')){delete S.drafts[dkey];render();}
       break;}
     case 'addStore':{
