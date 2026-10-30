@@ -132,9 +132,10 @@ td.tot{font-weight:700}
 <div class="wrap" id="app"></div>
 <div id="toast" role="status" aria-live="polite"></div>
 
+<script src="config.js"></script>
 <script>
-/* ★ 設定：把 Apps Script 部署後得到的網址（結尾是 /exec）貼在下面的引號裡 ★ */
-var CONFIG = { API_URL: 'https://script.google.com/macros/s/AKfycbxj-ifngoMaqg97_Ssg0g4cxko0hZjKJ9q9uI9sr9MnpizYPHEn0ZeniNDle0WIbEkOvw/exec' };
+/* 連線網址放在 config.js，之後更新 index.html 不需要再貼一次 */
+var CONFIG = window.CONFIG || { API_URL: '' };
 
 (function(){
 var $app=document.getElementById('app');
@@ -241,7 +242,7 @@ function applyData(res){
   // 被移除的缺貨品項，從還沒送出的草稿裡一併拿掉
   S.all.forEach(function(o){
     var d=S.drafts[o.date+'|'+o.storeId+'|'+o.catId];
-    if(d&&o.removed&&o.removed.length)o.removed.forEach(function(r){if(!(o.lines||[]).some(function(l){return l.id===r.id;}))delete d[r.id];});
+    if(d&&o.removed&&o.removed.length)o.removed.forEach(function(r){if(!(o.lines||[]).some(function(l){return l.id===r.id;})){delete d[r.id];if(r.id==='memo')delete d.__note;}});
   });
   if(S.notifyReady)S.notify.forEach(function(o){
     var key=o.notifyAt||o.confirmedAt||1;
@@ -293,6 +294,7 @@ function draftFor(cat){
   if(!S.drafts[key]){
     var o=orderFor(S.date,S.storeId,cat.id),m={};
     if(o)(o.lines||[]).forEach(function(l){m[l.id]=l.qty;});
+    if(o&&cat.kind==='memo')m.__note=o.note||'';
     S.drafts[key]=m;
   }
   return S.drafts[key];
@@ -304,8 +306,9 @@ function catTotal(cat){return visibleItems(cat,S.storeId).reduce(function(a,it){
 /* ---------- views ---------- */
 function footHtml(cat){
   var o=orderFor(S.date,S.storeId,cat.id),locked=o&&o.status==='confirmed';
-  var total=catTotal(cat),sum='';
-  if(cat.boxSize){
+  var total=catTotal(cat),sum='',ready=total>0;
+  if(cat.kind==='memo'){var mn=String(draftFor(cat).__note||'');sum='備註 <b>'+Array.from(mn).length+'</b>/50';ready=mn.trim().length>0;}
+  else if(cat.boxSize){
     var boxes=total/cat.boxSize,whole=Math.abs(boxes-Math.round(boxes))<1e-9;
     sum='合計 <b>'+fmtN(total)+'</b> 公斤，約 <b>'+fmtN(boxes)+'</b> 箱（一箱 '+cat.boxSize+' 公斤）'+(total>0&&!whole?' · 不是整箱':'');
   }else{
@@ -316,7 +319,7 @@ function footHtml(cat){
   var dk=S.date+'|'+S.storeId+'|'+cat.id;
   if(o&&S.delAsk===dk)return '<span class="sum">確定刪除這張訂單？刪除後不會計入叫貨量。</span><span class="actions"><button class="btn ghost sm" data-act="delCancel" data-cat="'+esc(cat.id)+'">先不要</button><button class="btn sm" data-act="delDo" data-cat="'+esc(cat.id)+'">確定刪除</button></span>';
   var canDel=o&&o.status==='submitted';
-  return '<span class="sum">'+sum+'</span><span class="actions">'+(canDel?'<button class="btn ghost sm" data-act="delAsk" data-cat="'+esc(cat.id)+'">刪除訂單</button>':'')+'<button class="btn" data-act="submit" data-cat="'+esc(cat.id)+'"'+(total>0?'':' disabled')+'>'+(o?'更新叫貨':'送出叫貨')+'</button></span>';
+  return '<span class="sum">'+sum+'</span><span class="actions">'+(canDel?'<button class="btn ghost sm" data-act="delAsk" data-cat="'+esc(cat.id)+'">刪除訂單</button>':'')+'<button class="btn" data-act="submit" data-cat="'+esc(cat.id)+'"'+(ready?'':' disabled')+'>'+(o?'更新叫貨':'送出叫貨')+'</button></span>';
 }
 function statusHtml(o){
   if(!o)return '<span class="status">未送出</span>';
@@ -324,7 +327,20 @@ function statusHtml(o){
   if(o.status==='confirmed')return '<span class="stamp" title="訂貨人員已核實">核實</span>';
   return '<span class="status sent">已送出 · 待核實</span>';
 }
+function memoHtml(cat){
+  var o=orderFor(S.date,S.storeId,cat.id),locked=o&&o.status==='confirmed',d=draftFor(cat),dn=dayNote(cat,S.date);
+  var q=d.memo>0?d.memo:1,unit=cat.unit||'件',cid=esc(cat.id);
+  return '<section class="slip"><div class="slip-head"><div><h2>'+esc(cat.name)+'</h2><div class="meta"><span>廠商：'+(cat.vendor?esc(cat.vendor):'尚未設定')+'</span>'+(cat.note?'<span>'+esc(cat.note)+'</span>':'')+'</div></div>'+statusHtml(o)+'</div>'+
+    (dn?'<div class="notice">'+esc(dn)+'</div>':'')+
+    '<label class="field"><span class="lab">備註（50 字以內）</span><input class="fld mn" id="mn-'+cid+'" type="text" maxlength="50" placeholder="例如：吸管 2 包、外送袋" data-cat="'+cid+'" value="'+esc(d.__note||'')+'"'+(locked?' disabled':'')+'></label>'+
+    '<ul class="rows"><li class="row"><div class="nm"><b>數量</b></div>'+
+    '<div class="qty"><button aria-label="減少數量" data-act="mdec" data-cat="'+cid+'"'+(locked?' disabled':'')+'>−</button>'+
+    '<input class="mq" id="mq-'+cid+'" type="number" inputmode="decimal" min="1" step="any" aria-label="數量" data-cat="'+cid+'" value="'+esc(fmtN(q))+'"'+(locked?' disabled':'')+'>'+
+    '<button aria-label="增加數量" data-act="minc" data-cat="'+cid+'"'+(locked?' disabled':'')+'>+</button></div><span class="unit">'+esc(unit)+'</span></li></ul>'+
+    '<div class="foot" id="foot-'+cid+'">'+footHtml(cat)+'</div></section>';
+}
 function catHtml(cat){
+  if(cat.kind==='memo')return memoHtml(cat);
   var o=orderFor(S.date,S.storeId,cat.id),locked=o&&o.status==='confirmed';
   var items=visibleItems(cat,S.storeId),dn=dayNote(cat,S.date);
   var rows=items.map(function(it){
@@ -371,7 +387,15 @@ function groupPending(){
     return a.date.localeCompare(b.date)||((ca?ca.order:99)-(cb?cb.order:99));
   });
 }
+function memoMatrix(orders){
+  orders=orders.slice().sort(function(a,b){var sa=S.stores.find(function(s){return s.id===a.storeId;}),sb=S.stores.find(function(s){return s.id===b.storeId;});return (sa?sa.order:99)-(sb?sb.order:99);});
+  return '<div class="tablewrap"><table><tr><th>分店</th><th>備註</th><th>數量</th></tr>'+orders.map(function(o){
+    var l=(o.lines||[])[0]||{};
+    return '<tr><td>'+esc(storeName(o.storeId))+'</td><td style="white-space:normal;text-align:left;min-width:12em">'+esc(o.note||l.name||'')+'</td><td class="tot">'+esc(fmtN(l.qty||0))+' '+esc(l.unit||'件')+'</td></tr>';
+  }).join('')+'</table></div>';
+}
 function matrixHtml(orders,cat){
+  if(cat&&cat.kind==='memo')return memoMatrix(orders);
   orders=orders.slice().sort(function(a,b){var sa=S.stores.find(function(s){return s.id===a.storeId;}),sb=S.stores.find(function(s){return s.id===b.storeId;});return (sa?sa.order:99)-(sb?sb.order:99);});
   var rows=[],seen={};
   ((cat&&cat.items)||[]).forEach(function(it){
@@ -432,10 +456,17 @@ function statsView(){
   var byCat={};
   orders.forEach(function(o){
     var c=byCat[o.catId]=byCat[o.catId]||{catId:o.catId,name:o.catName,items:{}};
+    var oc=catById(o.catId);
+    if(oc&&oc.kind==='memo'){c.memo=c.memo||[];(o.lines||[]).forEach(function(l){c.memo.push({date:o.date,note:o.note||l.name,qty:l.qty,unit:l.unit});});return;}
     (o.lines||[]).forEach(function(l){var it=c.items[l.id]=c.items[l.id]||{id:l.id,name:l.name,unit:l.unit,qty:0,n:0};it.qty+=l.qty;it.n+=1;});
   });
   var list=Object.keys(byCat).map(function(k){return byCat[k];}).sort(function(a,b2){var ca=catById(a.catId),cb=catById(b2.catId);return (ca?ca.order:99)-(cb?cb.order:99);});
   var secs=list.map(function(c){
+    if(c.memo){
+      c.memo.sort(function(a,b){return a.date.localeCompare(b.date);});
+      return '<section class="slip"><div class="slip-head"><h2>'+esc(c.name)+'</h2></div><div class="tablewrap"><table><tr><th>日期</th><th>備註</th><th>數量</th></tr>'+
+        c.memo.map(function(m){return '<tr><td>'+esc(fmt(m.date))+'</td><td style="white-space:normal;text-align:left;min-width:12em">'+esc(m.note)+'</td><td class="tot">'+esc(fmtN(m.qty))+' '+esc(m.unit||'件')+'</td></tr>';}).join('')+'</table></div></section>';
+    }
     var cat=catById(c.catId),rows=[],seen={};
     ((cat&&cat.items)||[]).forEach(function(it){if(c.items[it.id]){rows.push(c.items[it.id]);seen[it.id]=1;}});
     Object.keys(c.items).forEach(function(k){if(!seen[k])rows.push(c.items[k]);});
@@ -466,6 +497,11 @@ function settingsView(){
         '<input class="fld n" type="number" inputmode="decimal" min="0" step="any" placeholder="通常" value="'+esc(it.usual==null?'':it.usual)+'" aria-label="通常數量" data-chg="itemField" data-f="usual" data-cat="'+esc(c.id)+'" data-item="'+esc(it.id)+'"></div>'+
         '<div class="form" style="justify-content:space-between;align-items:center"><div><span class="lab">限定分店</span>'+onlyChips+'</div><button class="btn ghost sm" data-act="toggleItem" data-cat="'+esc(c.id)+'" data-item="'+esc(it.id)+'">'+(off?'重新啟用':'停用')+'</button></div></div>';
     }).join('');
+    if(c.kind==='memo')return '<section class="catset"><h3>'+esc(c.name)+'</h3>'+
+      '<div class="form"><label class="field"><span class="lab">品類名稱</span><input class="fld" type="text" value="'+esc(c.name)+'" data-chg="catField" data-f="name" data-cat="'+esc(c.id)+'"></label>'+
+      '<label class="field"><span class="lab">廠商</span><input class="fld" type="text" value="'+esc(c.vendor||'')+'" placeholder="輸入廠商名稱" data-chg="catField" data-f="vendor" data-cat="'+esc(c.id)+'"></label></div>'+
+      '<label class="field"><span class="lab">說明（顯示在叫貨單上）</span><input class="fld" type="text" value="'+esc(c.note||'')+'" data-chg="catField" data-f="note" data-cat="'+esc(c.id)+'"></label>'+
+      '<div class="lab">這個品類只有一欄備註（50 字以內）和數量（單位：'+esc(c.unit||'件')+'），不需要設定品項。</div></section>';
     return '<section class="catset"><h3>'+esc(c.name)+'</h3>'+
       '<div class="form"><label class="field"><span class="lab">品類名稱</span><input class="fld" type="text" value="'+esc(c.name)+'" data-chg="catField" data-f="name" data-cat="'+esc(c.id)+'"></label>'+
       '<label class="field"><span class="lab">廠商</span><input class="fld" type="text" value="'+esc(c.vendor||'')+'" placeholder="輸入廠商名稱" data-chg="catField" data-f="vendor" data-cat="'+esc(c.id)+'"></label></div>'+
@@ -488,7 +524,7 @@ function tabList(){return isBuyer()?[['order','叫貨'],['verify','核實'],['st
 
 function render(){
   var head='<div class="top"><h1>叫貨單</h1><span class="today">今天 '+esc(fmt(ymd(new Date())))+(S.role?' · '+(isBuyer()?'訂貨人員':'分店')+' <button class="link" data-act="logout">登出</button>':'')+'</span></div>';
-  if(!configured()){$app.innerHTML=head+'<div class="empty"><b>尚未設定連線網址</b>請依說明，把 Apps Script 網址貼到 index.html 開頭的 CONFIG 裡。</div>';return;}
+  if(!configured()){$app.innerHTML=head+'<div class="empty"><b>尚未設定連線網址</b>請依說明，把 Apps Script 網址貼到 config.js 裡，並確認 config.js 和 index.html 放在同一個資料夾。</div>';return;}
   if(!S.pin||!S.role){$app.innerHTML=head+loginView();return;}
   if(!tabList().some(function(t){return t[0]===S.tab;}))S.tab='order';
   var tabs='<nav class="tabs" aria-label="功能">'+tabList().map(function(t){
@@ -524,6 +560,11 @@ async function act(a,ds){
       setQty(cat,it,nv);
       var inp=document.getElementById('q-'+cat.id+'-'+it.id);if(inp)inp.value=nv>0?fmtN(nv):'';
       refreshFoot(cat.id);break;}
+    case 'mdec':case 'minc':{
+      var dm0=draftFor(cat),cur0=dm0.memo>0?dm0.memo:1,nv0=Math.max(1,cur0+(a==='minc'?1:-1));
+      dm0.memo=nv0;
+      var mi=document.getElementById('mq-'+cat.id);if(mi)mi.value=fmtN(nv0);
+      break;}
     case 'usual':{
       var it2=(cat.items||[]).find(function(x){return x.id===ds.item;});
       setQty(cat,it2,usualFor(it2,S.date));
@@ -533,6 +574,12 @@ async function act(a,ds){
       var store=curStore();if(!store||!cat)return;
       var prev=orderFor(S.date,store.id,cat.id);
       if(prev&&prev.status==='confirmed'){toast('這張訂單已核實');return;}
+      if(cat.kind==='memo'){
+        var dm=draftFor(cat),note=String(dm.__note||'').trim();
+        if(!note){toast('請填寫備註');return;}
+        await write('saveOrder',{order:{date:S.date,storeId:store.id,catId:cat.id,note:note,qty:dm.memo>0?dm.memo:1}},store.name+'「'+cat.name+'」已送出');
+        break;
+      }
       var lines=visibleItems(cat,store.id).map(function(it){return {id:it.id,name:it.name,unit:it.unit,qty:num(getQty(cat,it))};}).filter(function(l){return l.qty>0;});
       if(!lines.length){toast('請至少填一項數量');return;}
       await write('saveOrder',{order:{date:S.date,storeId:store.id,catId:cat.id,lines:lines}},store.name+'「'+cat.name+'」已送出');
@@ -625,6 +672,14 @@ async function chg(kind,ds,el){
 $app.addEventListener('click',function(e){var b=e.target.closest('[data-act]');if(b&&!b.disabled)act(b.dataset.act,b.dataset);});
 $app.addEventListener('input',function(e){
   var t=e.target;
+  if(t.classList&&t.classList.contains('mn')){
+    var mc=catById(t.dataset.cat);if(mc){draftFor(mc).__note=t.value;refreshFoot(mc.id);}
+    return;
+  }
+  if(t.classList&&t.classList.contains('mq')){
+    var mc2=catById(t.dataset.cat);if(mc2){var mv=num(t.value);if(mv>0)draftFor(mc2).memo=mv;else delete draftFor(mc2).memo;}
+    return;
+  }
   if(t.classList&&t.classList.contains('q')){
     var cat=catById(t.dataset.cat);if(!cat)return;
     var it=(cat.items||[]).find(function(x){return x.id===t.dataset.item;});
